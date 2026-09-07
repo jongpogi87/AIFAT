@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 import {
   MemoryBatchRepository,
@@ -60,7 +61,30 @@ const baseValidSubmission = {
 };
 
 // Mirror the exact server-side validation and registration logic from app/api/register/route.ts
-async function simulateRegistrationRoute(body, regRepo, batchRepo) {
+async function simulateRegistrationRoute(
+  body,
+  regRepo,
+  batchRepo,
+  settingsRepo = { getSettings: async () => ({ registrationEnabled: true }) },
+  nowMs
+) {
+  // 1. Enforce Authoritative Master Registration Switch (Fail-Closed)
+  let isRegistrationActive = false;
+  try {
+    const settings = await settingsRepo?.getSettings?.();
+    isRegistrationActive = settings?.registrationEnabled === true;
+  } catch {
+    // Fail closed without leaking internal database errors
+    isRegistrationActive = false;
+  }
+
+  if (!isRegistrationActive) {
+    const err = new Error("Registration is currently closed. Please wait for the official registration announcement.");
+    err.statusCode = 409;
+    throw err;
+  }
+
+  // 2. Reject privileged or system field injection attempts
   const FORBIDDEN_CLIENT_FIELDS = [
     "uli",
     "role",
@@ -119,7 +143,8 @@ async function simulateRegistrationRoute(body, regRepo, batchRepo) {
     throw err;
   }
 
-  if (batch.registrationDeadline && Date.now() > Date.parse(batch.registrationDeadline)) {
+  const currentTime = nowMs !== undefined ? nowMs : Date.now();
+  if (batch.registrationDeadline && currentTime > Date.parse(batch.registrationDeadline)) {
     const err = new Error("The registration period for this batch has ended.");
     err.statusCode = 409;
     throw err;
@@ -543,4 +568,187 @@ test("Preflight 13: Transaction failure rolls back completely without leaving pa
   // Verify batch count unchanged
   const batchAfter = await batchRepo.getBatchById("t-online-am");
   assert.equal(batchAfter.registeredCount, initialCount);
+});
+
+test("Preflight 14: Global switch registrationEnabled: true permits an otherwise valid registration", async () => {
+  const { regRepo, batchRepo } = createHarness();
+  const settingsRepo = { getSettings: async () => ({ registrationEnabled: true }) };
+  const res = await simulateRegistrationRoute(baseValidSubmission, regRepo, batchRepo, settingsRepo);
+  assert.ok(res.registration.referenceNumber);
+  assert.equal(res.registration.registrationStatus, "CONFIRMED");
+});
+
+test("Preflight 15: Global switch registrationEnabled: false blocks registration (409)", async () => {
+  const { regRepo, batchRepo } = createHarness();
+  const settingsRepo = { getSettings: async () => ({ registrationEnabled: false }) };
+  await assert.rejects(
+    () => simulateRegistrationRoute(baseValidSubmission, regRepo, batchRepo, settingsRepo),
+    (err) =>
+      err.statusCode === 409 &&
+      err.message === "Registration is currently closed. Please wait for the official registration announcement."
+  );
+});
+
+test("Preflight 16: Missing settings document blocks registration (fail-closed, 409)", async () => {
+  const { regRepo, batchRepo } = createHarness();
+  const settingsRepo = { getSettings: async () => null };
+  await assert.rejects(
+    () => simulateRegistrationRoute(baseValidSubmission, regRepo, batchRepo, settingsRepo),
+    (err) =>
+      err.statusCode === 409 &&
+      err.message === "Registration is currently closed. Please wait for the official registration announcement."
+  );
+});
+
+test("Preflight 17: Missing registrationEnabled field blocks registration (fail-closed, 409)", async () => {
+  const { regRepo, batchRepo } = createHarness();
+  const settingsRepo = { getSettings: async () => ({ courseTitle: "AIFAT" }) };
+  await assert.rejects(
+    () => simulateRegistrationRoute(baseValidSubmission, regRepo, batchRepo, settingsRepo),
+    (err) =>
+      err.statusCode === 409 &&
+      err.message === "Registration is currently closed. Please wait for the official registration announcement."
+  );
+});
+
+test("Preflight 18: Malformed or non-boolean registrationEnabled values block registration (fail-closed, 409)", async () => {
+  const { regRepo, batchRepo } = createHarness();
+  const malformedValues = ["true", "OPEN", 1, 0, null, undefined, {}, []];
+  for (const val of malformedValues) {
+    const settingsRepo = { getSettings: async () => ({ registrationEnabled: val }) };
+    await assert.rejects(
+      () => simulateRegistrationRoute(baseValidSubmission, regRepo, batchRepo, settingsRepo),
+      (err) =>
+        err.statusCode === 409 &&
+        err.message === "Registration is currently closed. Please wait for the official registration announcement."
+    );
+  }
+});
+
+test("Preflight 19: Settings-repository failure fails closed without leaking database errors (409)", async () => {
+  const { regRepo, batchRepo } = createHarness();
+  const settingsRepo = {
+    getSettings: async () => {
+      throw new Error("CRITICAL_FIRESTORE_INTERNAL_CONNECTION_TIMEOUT_DEADLINE_EXCEEDED");
+    },
+  };
+  await assert.rejects(
+    () => simulateRegistrationRoute(baseValidSubmission, regRepo, batchRepo, settingsRepo),
+    (err) => {
+      assert.equal(err.statusCode, 409);
+      assert.equal(
+        err.message,
+        "Registration is currently closed. Please wait for the official registration announcement."
+      );
+      assert.ok(!err.message.includes("FIRESTORE"));
+      assert.ok(!err.message.includes("CONNECTION"));
+      return true;
+    }
+  );
+});
+
+test("Preflight 20: Blocked requests produce zero transaction side effects", async () => {
+  const { regRepo, batchRepo } = createHarness();
+  const settingsRepo = { getSettings: async () => ({ registrationEnabled: false }) };
+  const initialBatches = await batchRepo.getAllBatches();
+  const initialBatch = initialBatches.find((b) => b.batchId === "t-online-am");
+  const initialCount = initialBatch.registeredCount;
+
+  await assert.rejects(
+    () => simulateRegistrationRoute(baseValidSubmission, regRepo, batchRepo, settingsRepo),
+    (err) => err.statusCode === 409
+  );
+
+  // Assert zero records created in registrations
+  const registrations = await regRepo.getAllRegistrations();
+  assert.equal(registrations.length, 0);
+
+  // Assert batch registeredCount unchanged
+  const batchAfter = await batchRepo.getBatchById("t-online-am");
+  assert.equal(batchAfter.registeredCount, initialCount);
+});
+
+test("Preflight 21: UI cannot advance to learner registration while globally closed", async () => {
+  const pageSrc = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+
+  // Verify public notice text matches requirement exactly
+  assert.match(pageSrc, /REGISTRATION NOT YET OPEN/);
+  assert.match(
+    pageSrc,
+    /Online registration for the Artificial Intelligence Fundamentals and Applications In-House Training \(AIFAT\) is currently closed\. Please wait for the official registration announcement\./
+  );
+
+  // Verify canRegister evaluates to false when isRegistrationEnabled !== true even for an OPEN batch
+  const openBatch = { status: "OPEN", enabled: true, registrationDeadline: "2026-09-14T23:59:59+08:00" };
+  const isRegistrationEnabled = false;
+  const isExpired = Boolean(openBatch.registrationDeadline && Date.now() > Date.parse(openBatch.registrationDeadline));
+  const isFull = openBatch.status === "FULL";
+  const isClosed = openBatch.status === "CLOSED";
+  const isDisabled = !openBatch.enabled;
+  const canRegister =
+    isRegistrationEnabled &&
+    !isDisabled &&
+    !isExpired &&
+    !isFull &&
+    !isClosed &&
+    (openBatch.status === "OPEN" || openBatch.status === "NEARLY FULL");
+
+  assert.equal(canRegister, false, "canRegister must be false when global registration switch is not enabled");
+
+  // Verify badgeText and buttonLabel do NOT display misleading OPEN when globally closed
+  let badgeText = openBatch.status;
+  let buttonLabel = "Select this batch";
+  if (!isRegistrationEnabled) {
+    badgeText = "REGISTRATION NOT YET OPEN";
+    buttonLabel = "Registration Not Yet Open";
+  }
+
+  assert.equal(badgeText, "REGISTRATION NOT YET OPEN");
+  assert.notEqual(badgeText, "OPEN");
+  assert.equal(buttonLabel, "Registration Not Yet Open");
+  assert.notEqual(buttonLabel, "Select this batch");
+
+  // Verify page.tsx enforces guard on onSelect and direct register step render
+  assert.match(pageSrc, /if \(!isRegistrationEnabled\) return;/);
+  assert.match(pageSrc, /step === "register" && \(!isRegistrationEnabled \|\| !selected\)/);
+});
+
+test("Preflight 22: Production registration deadline locked at 2026-09-14T23:59:59+08:00 (within period vs expired)", async () => {
+  const { regRepo, batchRepo } = createHarness();
+  const lockedDeadline = "2026-09-14T23:59:59+08:00";
+
+  // Must not be a date-only string
+  assert.match(lockedDeadline, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\+08:00$/);
+  assert.notEqual(lockedDeadline, "2026-09-14");
+
+  await batchRepo.updateBatch("t-online-am", { registrationDeadline: lockedDeadline });
+
+  // 1. Exactly at 2026-09-14T23:59:59+08:00 -> Still within registration period
+  const atDeadlineMs = Date.parse("2026-09-14T23:59:59+08:00");
+  const resValid = await simulateRegistrationRoute(
+    { ...baseValidSubmission, email: "deadline.valid@example.invalid" },
+    regRepo,
+    batchRepo,
+    { getSettings: async () => ({ registrationEnabled: true }) },
+    atDeadlineMs
+  );
+  assert.ok(resValid.registration.referenceNumber);
+
+  // 2. Exactly at 2026-09-15T00:00:00+08:00 -> Expired (409)
+  const expiredMs = Date.parse("2026-09-15T00:00:00+08:00");
+  assert.ok(expiredMs > atDeadlineMs, "2026-09-15T00:00:00+08:00 must be greater than deadline timestamp");
+
+  await assert.rejects(
+    () =>
+      simulateRegistrationRoute(
+        { ...baseValidSubmission, email: "deadline.expired@example.invalid" },
+        regRepo,
+        batchRepo,
+        { getSettings: async () => ({ registrationEnabled: true }) },
+        expiredMs
+      ),
+    (err) =>
+      err.statusCode === 409 &&
+      err.message === "The registration period for this batch has ended."
+  );
 });

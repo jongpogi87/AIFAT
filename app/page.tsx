@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   ArrowLeft,
   ArrowRight,
@@ -221,12 +221,45 @@ function Progress({ step }: { step: Step }) {
   );
 }
 
+function RegistrationNotYetOpenNotice() {
+  return (
+    <div className="rounded-xl border-l-4 border-yellow-400 bg-[#053222] p-6 text-white shadow-md">
+      <div className="flex items-center gap-2 text-sm font-black uppercase tracking-wider text-yellow-300">
+        <ShieldCheck size={20} className="text-yellow-400" /> REGISTRATION NOT YET OPEN
+      </div>
+      <p className="mt-2 text-sm leading-relaxed text-emerald-50">
+        Online registration for the Artificial Intelligence Fundamentals and Applications In-House Training (AIFAT) is currently closed. Please wait for the official registration announcement.
+      </p>
+    </div>
+  );
+}
+
 export default function Home() {
   const [step, setStep] = useState<Step>("landing");
   const [aorCode, setAorCode] = useState("");
   const [batchId, setBatchId] = useState("");
   const [draft, setDraftState] = useState<Draft>(getStoredDraft);
   const [confirmation, setConfirmation] = useState<Registration | null>(null);
+  const [isRegistrationEnabled, setIsRegistrationEnabled] = useState<boolean>(false);
+
+  useEffect(() => {
+    let isMounted = true;
+    fetch("/api/settings")
+      .then((res) => res.json())
+      .then((data) => {
+        if (isMounted) {
+          setIsRegistrationEnabled(data?.registrationEnabled === true);
+        }
+      })
+      .catch(() => {
+        if (isMounted) {
+          setIsRegistrationEnabled(false);
+        }
+      });
+    return () => {
+      isMounted = false;
+    };
+  }, []);
 
   function setDraft(updater: React.SetStateAction<Draft>) {
     setDraftState((prev) => {
@@ -249,7 +282,7 @@ export default function Home() {
     <div className="min-h-screen bg-slate-50 text-slate-900">
       <Header step={step} go={setStep} />
       {step === "landing" ? (
-        <Landing onStart={() => setStep("aor")} />
+        <Landing isRegistrationEnabled={isRegistrationEnabled} onStart={() => setStep("aor")} />
       ) : (
         <main className="mx-auto max-w-6xl px-4 py-8 sm:px-6">
           <Progress step={step} />
@@ -258,13 +291,28 @@ export default function Home() {
             <BatchSelection
               aorCode={aorCode}
               batches={batches}
+              isRegistrationEnabled={isRegistrationEnabled}
               onSelect={(id) => {
+                if (!isRegistrationEnabled) return;
                 setBatchId(id);
                 setStep("register");
               }}
             />
           )}
-          {step === "register" && selected && (
+          {step === "register" && (!isRegistrationEnabled || !selected) && (
+            <div className="py-8">
+              <RegistrationNotYetOpenNotice />
+              <div className="mt-6 text-center">
+                <button
+                  onClick={() => setStep("batch")}
+                  className="rounded-lg bg-[#075b32] px-5 py-3 font-bold text-white hover:bg-[#064e2b]"
+                >
+                  Return to Batches
+                </button>
+              </div>
+            </div>
+          )}
+          {step === "register" && isRegistrationEnabled && selected && (
             <RegistrationForm
               batch={selected}
               draft={draft}
@@ -285,13 +333,18 @@ export default function Home() {
   );
 }
 
-function Landing({ onStart }: { onStart: () => void }) {
+function Landing({ onStart, isRegistrationEnabled }: { onStart: () => void; isRegistrationEnabled?: boolean }) {
   return (
     <main>
       <section className="relative overflow-hidden bg-[#062d20] text-white">
         <div className="absolute inset-0 opacity-20 [background-image:linear-gradient(120deg,transparent_45%,#1e8d58_45%,#1e8d58_46%,transparent_46%),radial-gradient(circle_at_80%_20%,#d8a62b_0,transparent_30%)]" />
         <div className="relative mx-auto grid max-w-7xl gap-10 px-4 py-12 sm:px-6 md:grid-cols-[1.35fr_.65fr] md:py-16">
           <div>
+            {!isRegistrationEnabled && (
+              <div className="mb-6">
+                <RegistrationNotYetOpenNotice />
+              </div>
+            )}
             <div className="mb-5 inline-flex items-center gap-2 border-l-4 border-yellow-400 bg-white/10 px-4 py-2 text-sm font-bold uppercase tracking-wider">
               <ShieldCheck size={18} /> TESDA Certification Opportunity
             </div>
@@ -306,7 +359,7 @@ function Landing({ onStart }: { onStart: () => void }) {
               onClick={onStart}
               className="mt-8 inline-flex min-h-12 items-center gap-2 rounded-lg border-2 border-yellow-500 bg-[#0c7a45] px-6 py-3 font-bold text-white shadow-lg hover:bg-[#09693b]"
             >
-              Select your AOR <ArrowRight size={19} />
+              {isRegistrationEnabled ? "Select your AOR" : "View AOR Training Schedules"} <ArrowRight size={19} />
             </button>
           </div>
           <aside className="self-end border border-white/15 bg-black/20 p-6 backdrop-blur">
@@ -431,15 +484,22 @@ function AorSelection({ onSelect }: { onSelect: (code: string) => void }) {
 function BatchSelection({
   aorCode,
   batches,
+  isRegistrationEnabled = false,
   onSelect,
 }: {
   aorCode: string;
   batches: Batch[];
+  isRegistrationEnabled?: boolean;
   onSelect: (id: string) => void;
 }) {
   const aor = AORS.find((a) => a.code === aorCode);
   return (
     <section>
+      {!isRegistrationEnabled && (
+        <div className="mb-6">
+          <RegistrationNotYetOpenNotice />
+        </div>
+      )}
       <div className="rounded-lg bg-slate-100 p-4">
         <span className="text-xs font-bold uppercase tracking-wider text-slate-500">Selected AOR</span>
         <strong className="ml-3 text-lg">{aor?.name}</strong>
@@ -452,25 +512,48 @@ function BatchSelection({
       </p>
       <div className="mt-7 grid gap-4 md:grid-cols-2">
         {batches.map((batch) => (
-          <BatchCard key={batch.batchId} batch={batch} onSelect={() => onSelect(batch.batchId)} />
+          <BatchCard
+            key={batch.batchId}
+            batch={batch}
+            isRegistrationEnabled={isRegistrationEnabled}
+            onSelect={() => onSelect(batch.batchId)}
+          />
         ))}
       </div>
     </section>
   );
 }
 
-function BatchCard({ batch, onSelect }: { batch: Batch; onSelect: () => void }) {
+function BatchCard({
+  batch,
+  isRegistrationEnabled = false,
+  onSelect,
+}: {
+  batch: Batch;
+  isRegistrationEnabled?: boolean;
+  onSelect: () => void;
+}) {
   const isExpired = Boolean(batch.registrationDeadline && Date.now() > Date.parse(batch.registrationDeadline));
   const isFull = batch.status === "FULL";
   const isClosed = batch.status === "CLOSED";
   const isDisabled = !batch.enabled;
-  const canRegister = !isDisabled && !isExpired && !isFull && !isClosed && (batch.status === "OPEN" || batch.status === "NEARLY FULL");
+  const canRegister =
+    isRegistrationEnabled &&
+    !isDisabled &&
+    !isExpired &&
+    !isFull &&
+    !isClosed &&
+    (batch.status === "OPEN" || batch.status === "NEARLY FULL");
 
   let badgeText: string = batch.status;
   let badgeClasses = "bg-emerald-100 text-emerald-900 border border-emerald-300";
   let buttonLabel = "Select this batch";
 
-  if (isDisabled) {
+  if (!isRegistrationEnabled) {
+    badgeText = "REGISTRATION NOT YET OPEN";
+    badgeClasses = "bg-amber-100 text-amber-900 border border-amber-300";
+    buttonLabel = "Registration Not Yet Open";
+  } else if (isDisabled) {
     badgeText = "UNAVAILABLE";
     badgeClasses = "bg-slate-200 text-slate-700 border border-slate-300";
     buttonLabel = "Batch Unavailable";

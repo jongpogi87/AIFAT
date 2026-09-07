@@ -37,5 +37,7 @@ export const DEFAULT_OPERATIONAL_CONFIG: OperationalConfig = {
   courseDescription: "Comprehensive foundational and applied artificial intelligence training program conducted by The Signal School in collaboration with a TESDA-accredited training provider.",
   tesdaOpportunityWording: "In collaboration with a TESDA-accredited training provider. Qualified completers may be endorsed for national competency assessment where applicable.",
   defaultClassCapacity: 25,
-  registrationEnabled: true,
+  registrationEnabled: false,
 };
+
+export const LOCKED_REGISTRATION_DEADLINE = "2026-09-14T23:59:59+08:00";

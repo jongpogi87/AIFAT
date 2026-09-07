@@ -1,4 +1,4 @@
-import { getRegistrationRepository, getBatchRepository, getAuditRepository } from "@/lib/repositories";
+import { getRegistrationRepository, getBatchRepository, getSettingsRepository, getAuditRepository } from "@/lib/repositories";
 import { getAor, isDeliveryModeAuthorized } from "@/lib/batches";
 import { notificationService } from "@/lib/notifications";
 import {
@@ -16,7 +16,25 @@ export async function POST(request: Request) {
   try {
     const body = (await request.json()) as Record<string, unknown>;
 
-    // 1. Reject privileged or system field injection attempts
+    // 1. Enforce Authoritative Master Registration Switch (Fail-Closed)
+    let isRegistrationActive = false;
+    try {
+      const settingsRepo = getSettingsRepository();
+      const settings = await settingsRepo.getSettings();
+      isRegistrationActive = settings?.registrationEnabled === true;
+    } catch {
+      // Fail closed without leaking internal database errors
+      isRegistrationActive = false;
+    }
+
+    if (!isRegistrationActive) {
+      return Response.json(
+        { error: "Registration is currently closed. Please wait for the official registration announcement." },
+        { status: 409 }
+      );
+    }
+
+    // 2. Reject privileged or system field injection attempts
     const FORBIDDEN_CLIENT_FIELDS = [
       "uli",
       "role",
@@ -42,7 +60,7 @@ export async function POST(request: Request) {
       }
     }
 
-    // 2. Validate System Registration Routing Data against Authoritative Repository
+    // 3. Validate System Registration Routing Data against Authoritative Repository
     const aor = String(body.aor || "").trim().toUpperCase();
     const batchId = String(body.batchId || "").trim();
 
