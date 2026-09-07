@@ -1,9 +1,7 @@
 import { registrations } from "@/db/schema";
 import { getDb } from "@/db";
-
-const online = new Set(["online-am", "online-pm"]);
-const centralized = new Set(["online-am", "online-pm", "f2f-am", "f2f-pm"]);
-const aors = new Set([..."ABCDEFGHIJK", "TSS"]);
+import { getBatch, getAor } from "@/lib/batches";
+import { eq, sql } from "drizzle-orm";
 
 export async function POST(request: Request) {
   try {
@@ -13,11 +11,20 @@ export async function POST(request: Request) {
     }
     if (body.consent !== true) return Response.json({ error: "Consent is required to register." }, { status: 400 });
     const aor = String(body.aor), batchId = String(body.batchId), email = String(body.email).trim().toLowerCase();
-    if (!aors.has(aor) || !(aor === "TSS" ? centralized : online).has(batchId)) return Response.json({ error: "The selected AOR and batch combination is not available." }, { status: 400 });
+    const batch = getBatch(batchId);
+    if (!getAor(aor) || !batch || batch.aorCode !== aor) return Response.json({ error: "The selected AOR and batch combination is not available." }, { status: 400 });
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return Response.json({ error: "Enter a valid email address." }, { status: 400 });
-    const referenceNumber = `AIFAT-2026-${crypto.randomUUID().slice(0,8).toUpperCase()}`;
+    if (!/^[0-9+() -]{7,20}$/.test(String(body.contactNumber).trim())) return Response.json({ error: "Enter a valid contact number." }, { status: 400 });
+    if (!["OPEN","NEARLY FULL"].includes(batch.status)) return Response.json({ error: "Registration for this batch is not open." }, { status: 409 });
+    if (batch.registrationDeadline && Date.now() > Date.parse(batch.registrationDeadline)) return Response.json({ error: "The registration deadline for this batch has passed." }, { status: 409 });
+    const db = getDb();
+    if (batch.capacity !== null) {
+      const [row] = await db.select({count:sql<number>`count(*)`}).from(registrations).where(eq(registrations.batchId,batchId));
+      if (Number(row.count) >= batch.capacity) return Response.json({ error: "This batch is already full." }, { status: 409 });
+    }
+    const referenceNumber = `AIFAT-2026-${aor}-${crypto.randomUUID().slice(0,8).toUpperCase()}`;
     const record = { referenceNumber, fullName:String(body.fullName).trim(), rank:String(body.rank).trim(), unit:String(body.unit).trim(), email, contactNumber:String(body.contactNumber).trim(), serviceCategory:String(body.serviceCategory).trim(), aor, batchId, createdAt:new Date() };
-    await getDb().insert(registrations).values(record);
+    await db.insert(registrations).values(record);
     return Response.json({ registration: record }, { status: 201 });
   } catch (error) {
     const message = error instanceof Error ? error.message : "";
