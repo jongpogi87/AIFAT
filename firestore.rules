@@ -71,8 +71,9 @@ service cloud.firestore {
 
     // Admin Profiles: Strictly protected; users can read their own profile if authenticated
     match /adminProfiles/{uid} {
-      allow read: if isAuthenticated() && (request.auth.uid == uid || isAdmin());
-      allow write: if isAdmin();
+      allow read: if isAuthenticated() &&
+        (request.auth.uid == uid || isAdmin());
+      allow write: if false;
     }
   }
 }
