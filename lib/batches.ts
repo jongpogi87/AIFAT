@@ -35,3 +35,15 @@ export const BATCHES: Batch[] = AORS.flatMap(({name,code}) => {
 
 export function getBatch(batchId:string){return BATCHES.find(batch=>batch.batchId===batchId&&batch.enabled);}
 export function getAor(code:string){return AORS.find(aor=>aor.code===code);}
+
+/**
+ * Strict institutional rule:
+ * 1ID-11ID (A-K) are strictly Online-only.
+ * Face-to-Face is authorized EXCLUSIVELY for NCR AOR (T).
+ */
+export function isDeliveryModeAuthorized(aorCode: string, deliveryMode: string): boolean {
+  if (deliveryMode === "Face-to-Face") {
+    return aorCode === "T";
+  }
+  return deliveryMode === "Online";
+}

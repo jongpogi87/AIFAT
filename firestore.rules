@@ -1,0 +1,78 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Helper function: Check if user is authenticated
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    // Helper function: Check if user has an active admin profile
+    function isAdmin() {
+      return isAuthenticated() &&
+        exists(/databases/$(database)/documents/adminProfiles/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/adminProfiles/$(request.auth.uid)).data.enabled == true &&
+        (get(/databases/$(database)/documents/adminProfiles/$(request.auth.uid)).data.role == 'SUPER_ADMIN' ||
+         get(/databases/$(database)/documents/adminProfiles/$(request.auth.uid)).data.role == 'ADMIN');
+    }
+
+    // Default posture: DENY ALL
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // AORs: Public read-only for active AORs, Admin write
+    match /aors/{aorId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    // Batches: Public read-only for enabled batches, Admin write
+    // Public learners CANNOT modify batch capacity or registeredCount directly
+    match /batches/{batchId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    // Learners: STRICTLY DENIED for public client direct access
+    // All creation and updates are server-mediated via Next.js Server / Admin SDK
+    match /learners/{learnerId} {
+      allow read: if isAdmin();
+      allow write: if isAdmin();
+    }
+
+    // Registrations: STRICTLY DENIED for public client direct access
+    match /registrations/{registrationId} {
+      allow read: if isAdmin();
+      allow write: if isAdmin();
+    }
+
+    // Duplicates reservation documents: Server-only
+    match /duplicates/{duplicateKey} {
+      allow read, write: if false;
+    }
+
+    // Counters: Server-only for transaction-safe sequence generation
+    match /counters/{counterId} {
+      allow read, write: if false;
+    }
+
+    // System Settings: Public read for active global settings, Admin write
+    match /systemSettings/{settingId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    // Audit Logs: Admin read-only, Client write DENIED
+    match /auditLogs/{logId} {
+      allow read: if isAdmin();
+      allow write: if false;
+    }
+
+    // Admin Profiles: Strictly protected; users can read their own profile if authenticated
+    match /adminProfiles/{uid} {
+      allow read: if isAuthenticated() && (request.auth.uid == uid || isAdmin());
+      allow write: if isAdmin();
+    }
+  }
+}

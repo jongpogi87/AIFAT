@@ -1,0 +1,35 @@
+# Firebase App Hosting Configuration
+# Application: Artificial Intelligence Fundamentals and Applications In-House Training (AIFAT)
+# Conducted by: The Signal School, Signal Regiment, Philippine Army
+
+runConfig:
+  # Conservative baseline scaling for billing safety
+  minInstances: 0
+  maxInstances: 2
+  concurrency: 80
+  cpu: 1
+  memoryMiB: 512
+
+env:
+  - variable: NODE_ENV
+    value: production
+  - variable: DATA_BACKEND
+    value: firestore
+  - variable: NEXT_PUBLIC_APP_URL
+    value: https://aifat.tss.army.mil.ph
+  - variable: COURSE_TITLE
+    value: Artificial Intelligence Fundamentals and Applications In-House Training (AIFAT)
+  - variable: REFERENCE_PREFIX
+    value: AIFAT
+  - variable: CURRENT_YEAR
+    value: "2026"
+  # Operational Contacts (Placeholders pending official TSS confirmation)
+  - variable: CONTACT_EMAIL
+    value: "[PENDING OFFICIAL CONFIRMATION]"
+  - variable: CONTACT_PHONE
+    value: "[PENDING OFFICIAL CONFIRMATION]"
+
+# Secret Manager integration: In production, configure secrets in Google Cloud Secret Manager
+# secrets:
+#   - variable: SESSION_SECRET
+#     secret: aifat-session-secret
