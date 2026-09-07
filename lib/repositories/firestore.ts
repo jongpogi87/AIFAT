@@ -78,7 +78,7 @@ export class FirestoreRegistrationRepository implements RegistrationRepository {
       const batchData = batchDoc.data() as BatchRecord;
 
       if (!batchData.enabled) {
-        const err = new Error("The selected batch is currently unavailable.");
+        const err = new Error("This batch is currently unavailable.");
         (err as any).statusCode = 400;
         throw err;
       }
@@ -95,14 +95,20 @@ export class FirestoreRegistrationRepository implements RegistrationRepository {
         throw err;
       }
 
-      if (!["OPEN", "NEARLY FULL"].includes(batchData.status)) {
-        const err = new Error("Registration for this batch is not open.");
+      if (batchData.status === "FULL") {
+        const err = new Error("This batch is already full. Please select another available batch.");
+        (err as any).statusCode = 409;
+        throw err;
+      }
+
+      if (batchData.status === "CLOSED" || !["OPEN", "NEARLY FULL"].includes(batchData.status)) {
+        const err = new Error("Registration for this batch is closed.");
         (err as any).statusCode = 409;
         throw err;
       }
 
       if (batchData.registrationDeadline && Date.now() > Date.parse(batchData.registrationDeadline)) {
-        const err = new Error("The registration deadline for this batch has passed.");
+        const err = new Error("The registration period for this batch has ended.");
         (err as any).statusCode = 409;
         throw err;
       }
@@ -111,7 +117,7 @@ export class FirestoreRegistrationRepository implements RegistrationRepository {
       const capacity = Number(batchData.capacity) || 25;
 
       if (currentCount >= capacity) {
-        const err = new Error("This batch is already full.");
+        const err = new Error("This batch is already full. Please select another available batch.");
         (err as any).statusCode = 409;
         throw err;
       }
@@ -122,7 +128,7 @@ export class FirestoreRegistrationRepository implements RegistrationRepository {
       const dupDoc = await transaction.get(dupRef);
 
       if (dupDoc.exists) {
-        const err = new Error("This email is already registered for the selected batch.");
+        const err = new Error("You are already registered for this batch.");
         (err as any).statusCode = 409;
         throw err;
       }

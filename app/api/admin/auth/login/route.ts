@@ -24,7 +24,40 @@ export async function POST(request: Request) {
 
     const cleanUsername = username.trim();
 
-    // 2. Check explicit non-production local development admin credentials
+    // 2. Firebase Email/Password authentication via Identity Toolkit
+    const apiKey = process.env.NEXT_PUBLIC_FIREBASE_API_KEY;
+    if (apiKey && cleanUsername.includes("@")) {
+      try {
+        const verifyRes = await fetch(
+          `https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=${apiKey}`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ email: cleanUsername, password, returnSecureToken: true }),
+          }
+        );
+        const authData = await verifyRes.json();
+        if (verifyRes.ok && authData.idToken) {
+          const { session, cookieOptions } = await createAdminSessionCookie(authData.idToken);
+          return new Response(JSON.stringify({ success: true, user: session }), {
+            status: 200,
+            headers: { "Content-Type": "application/json", "Set-Cookie": cookieOptions },
+          });
+        } else if (authData.error?.message) {
+          const errMsg =
+            authData.error.message === "EMAIL_NOT_FOUND" ||
+            authData.error.message === "INVALID_PASSWORD" ||
+            authData.error.message === "INVALID_LOGIN_CREDENTIALS"
+              ? "Invalid administrator credentials."
+              : authData.error.message;
+          return Response.json({ error: errMsg }, { status: 401 });
+        }
+      } catch (err: any) {
+        return Response.json({ error: err?.message || "Firebase authentication failed." }, { status: 401 });
+      }
+    }
+
+    // 3. Check explicit non-production local development admin credentials
     const isLocalDevAdminEnabled =
       process.env.NODE_ENV !== "production" &&
       (process.env.LOCAL_DEV_ADMIN === "true" || process.env.ADMIN_DEV_MODE === "true");
@@ -107,7 +140,7 @@ export async function POST(request: Request) {
 
     return Response.json({ error: "Invalid administrative credentials." }, { status: 401 });
   } catch (err: any) {
-    console.error("admin_login_failed", err);
+    console.error("admin_login_failed:", err?.message || "Internal error");
     return Response.json({ error: err?.message || "Authentication failed." }, { status: 500 });
   }
 }

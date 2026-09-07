@@ -236,7 +236,7 @@ export default function Home() {
     });
   }
 
-  const batches = useMemo(() => BATCHES.filter((b) => b.aorCode === aorCode && b.enabled), [aorCode]);
+  const batches = useMemo(() => BATCHES.filter((b) => b.aorCode === aorCode), [aorCode]);
   const selected = BATCHES.find((b) => b.batchId === batchId);
 
   function chooseAor(code: string) {
@@ -460,7 +460,36 @@ function BatchSelection({
 }
 
 function BatchCard({ batch, onSelect }: { batch: Batch; onSelect: () => void }) {
-  const canRegister = batch.status === "OPEN" || batch.status === "NEARLY FULL";
+  const isExpired = Boolean(batch.registrationDeadline && Date.now() > Date.parse(batch.registrationDeadline));
+  const isFull = batch.status === "FULL";
+  const isClosed = batch.status === "CLOSED";
+  const isDisabled = !batch.enabled;
+  const canRegister = !isDisabled && !isExpired && !isFull && !isClosed && (batch.status === "OPEN" || batch.status === "NEARLY FULL");
+
+  let badgeText: string = batch.status;
+  let badgeClasses = "bg-emerald-100 text-emerald-900 border border-emerald-300";
+  let buttonLabel = "Select this batch";
+
+  if (isDisabled) {
+    badgeText = "UNAVAILABLE";
+    badgeClasses = "bg-slate-200 text-slate-700 border border-slate-300";
+    buttonLabel = "Batch Unavailable";
+  } else if (isExpired) {
+    badgeText = "REGISTRATION ENDED";
+    badgeClasses = "bg-amber-100 text-amber-900 border border-amber-300";
+    buttonLabel = "Registration Ended";
+  } else if (isFull) {
+    badgeText = "FULL";
+    badgeClasses = "bg-red-100 text-red-900 border border-red-300";
+    buttonLabel = "Batch Full";
+  } else if (isClosed) {
+    badgeText = "CLOSED";
+    badgeClasses = "bg-slate-200 text-slate-800 border border-slate-300";
+    buttonLabel = "Registration Closed";
+  } else if (batch.status === "NEARLY FULL") {
+    badgeClasses = "bg-amber-100 text-amber-900 border border-amber-300";
+  }
+
   return (
     <article className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
       <div className="flex items-start justify-between gap-3">
@@ -470,7 +499,7 @@ function BatchCard({ batch, onSelect }: { batch: Batch; onSelect: () => void }) 
             {batch.deliveryMode} {batch.session}
           </h2>
         </div>
-        <span className="rounded-full bg-emerald-100 px-3 py-1 text-xs font-black text-emerald-900">{batch.status}</span>
+        <span className={`rounded-full px-3 py-1 text-xs font-black ${badgeClasses}`}>{badgeText}</span>
       </div>
       <dl className="mt-5 grid gap-3 text-sm text-slate-700">
         <div className="flex gap-2">
@@ -496,9 +525,9 @@ function BatchCard({ batch, onSelect }: { batch: Batch; onSelect: () => void }) 
       <button
         disabled={!canRegister}
         onClick={onSelect}
-        className="mt-6 flex min-h-12 w-full items-center justify-center gap-2 rounded-lg bg-[#075b32] px-4 py-3 font-bold text-white disabled:cursor-not-allowed disabled:bg-slate-400"
+        className="mt-6 flex min-h-12 w-full items-center justify-center gap-2 rounded-lg bg-[#075b32] px-4 py-3 font-bold text-white transition hover:bg-[#064e2b] disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-slate-600 disabled:hover:bg-slate-300"
       >
-        Select this batch <ArrowRight size={18} />
+        {buttonLabel} {canRegister && <ArrowRight size={18} />}
       </button>
     </article>
   );

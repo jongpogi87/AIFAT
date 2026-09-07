@@ -1,5 +1,5 @@
-import { getRegistrationRepository, getAuditRepository } from "@/lib/repositories";
-import { getBatch, getAor, isDeliveryModeAuthorized } from "@/lib/batches";
+import { getRegistrationRepository, getBatchRepository, getAuditRepository } from "@/lib/repositories";
+import { getAor, isDeliveryModeAuthorized } from "@/lib/batches";
 import { notificationService } from "@/lib/notifications";
 import {
   TESDA_EDUCATIONAL_ATTAINMENTS,
@@ -16,11 +16,38 @@ export async function POST(request: Request) {
   try {
     const body = (await request.json()) as Record<string, unknown>;
 
-    // 1. Validate System Registration Routing Data
+    // 1. Reject privileged or system field injection attempts
+    const FORBIDDEN_CLIENT_FIELDS = [
+      "uli",
+      "role",
+      "isAdmin",
+      "adminStatus",
+      "capacity",
+      "registeredCount",
+      "classDesignation",
+      "registrationStatus",
+      "attendanceStatus",
+      "completionStatus",
+      "certificationStatus",
+      "referenceNumber",
+      "isTestData",
+    ];
+
+    for (const field of FORBIDDEN_CLIENT_FIELDS) {
+      if (body[field] !== undefined && body[field] !== null) {
+        return Response.json(
+          { error: "Privileged, administrative, or read-only fields cannot be submitted." },
+          { status: 400 }
+        );
+      }
+    }
+
+    // 2. Validate System Registration Routing Data against Authoritative Repository
     const aor = String(body.aor || "").trim().toUpperCase();
     const batchId = String(body.batchId || "").trim();
 
-    const batch = getBatch(batchId);
+    const batchRepo = getBatchRepository();
+    const batch = await batchRepo.getBatchById(batchId);
     if (!getAor(aor) || !batch || batch.aorCode !== aor) {
       return Response.json({ error: "The selected AOR and batch combination is not available." }, { status: 400 });
     }
@@ -29,12 +56,25 @@ export async function POST(request: Request) {
       return Response.json({ error: "The selected delivery mode is not authorized for this AOR." }, { status: 400 });
     }
 
-    if (!["OPEN", "NEARLY FULL"].includes(batch.status)) {
-      return Response.json({ error: "Registration for this batch is not open." }, { status: 409 });
+    if (!batch.enabled) {
+      return Response.json({ error: "This batch is currently unavailable." }, { status: 400 });
+    }
+
+    if (batch.status === "FULL") {
+      return Response.json(
+        { error: "This batch is already full. Please select another available batch." },
+        { status: 409 }
+      );
+    }
+
+    if (batch.status === "CLOSED" || !["OPEN", "NEARLY FULL"].includes(batch.status)) {
+      // Registration for this batch is not open
+      return Response.json({ error: "Registration for this batch is closed." }, { status: 409 });
     }
 
     if (batch.registrationDeadline && Date.now() > Date.parse(batch.registrationDeadline)) {
-      return Response.json({ error: "The registration deadline for this batch has passed." }, { status: 409 });
+      // Check if registration deadline has passed
+      return Response.json({ error: "The registration period for this batch has ended." }, { status: 409 });
     }
 
     // 2. Validate Learner Name
@@ -92,6 +132,13 @@ export async function POST(request: Request) {
     const calculatedAge = calculateAge(birthdate);
     if (calculatedAge === null || calculatedAge < 15 || calculatedAge > 100) {
       return Response.json({ error: "Please enter a valid birthdate." }, { status: 400 });
+    }
+
+    if (body.age !== undefined && body.age !== null && body.age !== "") {
+      const submittedAge = Number(body.age);
+      if (Number.isNaN(submittedAge) || submittedAge !== calculatedAge) {
+        return Response.json({ error: "Submitted age does not match the provided birthdate." }, { status: 400 });
+      }
     }
 
     const birthCity = String(body.birthCity || "").trim();
@@ -221,7 +268,7 @@ export async function POST(request: Request) {
         entityType: "REGISTRATION",
         entityId: registration.referenceNumber,
         timestamp: new Date().toISOString(),
-        metadata: { batchId, aor, email, course: DEFAULT_COURSE_QUALIFICATION },
+        metadata: { batchId, aor, course: DEFAULT_COURSE_QUALIFICATION },
       });
     } catch {}
 
@@ -243,7 +290,7 @@ export async function POST(request: Request) {
         endTime: authoritativeBatch.endTime,
         venue: authoritativeBatch.venue,
       })
-      .catch((err) => console.error("notification_failed", err));
+      .catch((err) => console.error("notification_failed:", err?.message || "Internal error"));
 
     return Response.json(
       {
@@ -283,12 +330,24 @@ export async function POST(request: Request) {
       message.includes("UNIQUE constraint") ||
       fullErrStr.includes("UNIQUE constraint")
     ) {
-      return Response.json({ error: "This email is already registered for the selected batch." }, { status: 409 });
+      return Response.json({ error: "You are already registered for this batch." }, { status: 409 });
     }
     if (message.includes("already full") || message.includes("full")) {
-      return Response.json({ error: "This batch is already full." }, { status: 409 });
+      return Response.json(
+        { error: "This batch is already full. Please select another available batch." },
+        { status: 409 }
+      );
     }
-    console.error("registration_failed", error);
+    if (message.includes("deadline") || message.includes("ended")) {
+      return Response.json({ error: "The registration period for this batch has ended." }, { status: 409 });
+    }
+    if (message.includes("closed") || message.includes("not open")) {
+      return Response.json({ error: "Registration for this batch is closed." }, { status: 409 });
+    }
+    if (message.includes("unavailable") || message.includes("disabled")) {
+      return Response.json({ error: "This batch is currently unavailable." }, { status: 400 });
+    }
+    console.error("registration_failed:", error?.message || "Internal error");
     return Response.json({ error: "Registration is temporarily unavailable. Please try again." }, { status: 500 });
   }
 }

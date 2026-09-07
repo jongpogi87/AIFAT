@@ -95,7 +95,7 @@ export class MemoryRegistrationRepository implements RegistrationRepository {
     }
 
     if (!batch.enabled) {
-      const err = new Error("The selected batch is currently unavailable.");
+      const err = new Error("This batch is currently unavailable.");
       (err as any).statusCode = 400;
       throw err;
     }
@@ -112,14 +112,20 @@ export class MemoryRegistrationRepository implements RegistrationRepository {
       throw err;
     }
 
-    if (!["OPEN", "NEARLY FULL"].includes(batch.status)) {
-      const err = new Error("Registration for this batch is not open.");
+    if (batch.status === "FULL") {
+      const err = new Error("This batch is already full. Please select another available batch.");
+      (err as any).statusCode = 409;
+      throw err;
+    }
+
+    if (batch.status === "CLOSED" || !["OPEN", "NEARLY FULL"].includes(batch.status)) {
+      const err = new Error("Registration for this batch is closed.");
       (err as any).statusCode = 409;
       throw err;
     }
 
     if (batch.registrationDeadline && Date.now() > Date.parse(batch.registrationDeadline)) {
-      const err = new Error("The registration deadline for this batch has passed.");
+      const err = new Error("The registration period for this batch has ended.");
       (err as any).statusCode = 409;
       throw err;
     }
@@ -128,7 +134,7 @@ export class MemoryRegistrationRepository implements RegistrationRepository {
     const capacity = Number(batch.capacity) || 25;
 
     if (currentCount >= capacity) {
-      const err = new Error("This batch is already full.");
+      const err = new Error("This batch is already full. Please select another available batch.");
       (err as any).statusCode = 409;
       throw err;
     }
@@ -136,7 +142,7 @@ export class MemoryRegistrationRepository implements RegistrationRepository {
     // 2. Duplicate registration check
     const dupKey = hashDuplicateKey(batchId, email);
     if (this.duplicates.has(dupKey)) {
-      const err = new Error("This email is already registered for the selected batch.");
+      const err = new Error("You are already registered for this batch.");
       (err as any).statusCode = 409;
       throw err;
     }
@@ -144,8 +150,6 @@ export class MemoryRegistrationRepository implements RegistrationRepository {
     // 3. Counter sequence check
     const counterKey = `seq_${year}_${aorCode}`;
     const nextSeq = (this.counters.get(counterKey) || 0) + 1;
-    this.counters.set(counterKey, nextSeq);
-
     const referenceNumber = generateReferenceNumber({ aorCode, year, sequenceNumber: nextSeq });
 
     // 4. Learner record
@@ -155,7 +159,6 @@ export class MemoryRegistrationRepository implements RegistrationRepository {
       email,
       updatedAt: now,
     };
-    this.learners.set(learnerId, learnerRecord);
 
     // 5. Registration record
     const regId = `reg_${this.registrations.size + 1}`;
@@ -175,9 +178,6 @@ export class MemoryRegistrationRepository implements RegistrationRepository {
       updatedAt: now,
     };
 
-    this.registrations.set(regId, registrationRecord);
-    this.duplicates.add(dupKey);
-
     // 6. Update batch count & status
     const newCount = currentCount + 1;
     let newStatus: BatchRecord["status"] = "OPEN";
@@ -191,6 +191,12 @@ export class MemoryRegistrationRepository implements RegistrationRepository {
       registeredCount: newCount,
       status: newStatus,
     });
+
+    // Commit all staged mutations atomically at transaction conclusion
+    this.counters.set(counterKey, nextSeq);
+    this.learners.set(learnerId, learnerRecord);
+    this.registrations.set(regId, registrationRecord);
+    this.duplicates.add(dupKey);
 
     return {
       registration: registrationRecord,
