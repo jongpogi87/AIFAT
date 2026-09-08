@@ -1,9 +1,16 @@
-"use client";
-
 import { useEffect, useState } from "react";
+import { useRouter } from "@/lib/router";
 import { AdminNav } from "@/components/admin-nav";
 import { AORS, type AorCode } from "@/lib/batches";
 import { Plus, Edit3, Check, X, ShieldAlert, AlertCircle } from "lucide-react";
+import {
+  subscribeAdminAuth,
+  getAdminBatches,
+  updateAdminBatch,
+  type AdminProfile,
+} from "@/lib/admin/admin-service";
+import { doc, setDoc } from "firebase/firestore";
+import { clientDb } from "@/lib/firebase/client";
 
 interface BatchItem {
   batchId: string;
@@ -32,6 +39,8 @@ export default function AdminBatchesPage() {
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [saveMsg, setSaveMsg] = useState("");
   const [errorMsg, setErrorMsg] = useState("");
+  const [adminProfile, setAdminProfile] = useState<AdminProfile | null>(null);
+  const router = useRouter();
 
   // Filter state
   const [filterAor, setFilterAor] = useState("");
@@ -53,21 +62,57 @@ export default function AdminBatchesPage() {
 
   async function loadBatches() {
     try {
-      const res = await fetch("/api/admin/batches");
-      if (res.ok) {
-        const data = await res.json();
-        setBatches(data.batches || []);
-      }
+      const bDocs = await getAdminBatches();
+      const items: BatchItem[] = bDocs.map((b) => {
+        const capacity = b.capacity || 25;
+        const enrolled = Number(b.registeredCount) || 0;
+        return {
+          batchId: b.batchId,
+          classDesignation: b.classDesignation,
+          aorCode: b.aorCode,
+          aorName: b.aorName,
+          deliveryMode: b.deliveryMode as any,
+          session: b.session as any,
+          startDate: b.startDate,
+          endDate: b.endDate,
+          startTime: b.startTime,
+          endTime: b.endTime,
+          venue: b.venue,
+          registrationDeadline: b.registrationDeadline,
+          capacity,
+          status: b.status,
+          enabled: b.enabled !== false,
+          enrolled,
+          remaining: Math.max(0, capacity - enrolled),
+        };
+      });
+      setBatches(items);
     } catch (err) {
-      console.error(err);
+      console.error("load_batches_err", err);
     } finally {
       setLoading(false);
     }
   }
 
   useEffect(() => {
-    loadBatches();
-  }, []);
+    let isMounted = true;
+    const unsubscribe = subscribeAdminAuth((profile, authLoading) => {
+      if (authLoading) return;
+      if (!profile || !profile.enabled) {
+        router.push("/admin/login");
+        return;
+      }
+      if (isMounted) {
+        setAdminProfile(profile);
+        loadBatches();
+      }
+    });
+
+    return () => {
+      isMounted = false;
+      unsubscribe();
+    };
+  }, [router]);
 
   // When AOR changes in create form, enforce online-only if not NCR
   function handleAorChange(code: string) {
@@ -85,32 +130,23 @@ export default function AdminBatchesPage() {
     setSaveMsg("");
 
     try {
-      const res = await fetch(`/api/admin/batches/${encodeURIComponent(editingBatch.batchId)}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          capacity: Number(editingBatch.capacity),
-          status: editingBatch.status,
-          registrationDeadline: editingBatch.registrationDeadline,
-          startDate: editingBatch.startDate,
-          endDate: editingBatch.endDate,
-          startTime: editingBatch.startTime,
-          endTime: editingBatch.endTime,
-          venue: editingBatch.venue,
-          enabled: editingBatch.enabled,
-        }),
+      await updateAdminBatch(editingBatch.batchId, {
+        capacity: Number(editingBatch.capacity),
+        status: editingBatch.status as any,
+        registrationDeadline: editingBatch.registrationDeadline,
+        startDate: editingBatch.startDate,
+        endDate: editingBatch.endDate,
+        startTime: editingBatch.startTime,
+        endTime: editingBatch.endTime,
+        venue: editingBatch.venue,
+        enabled: editingBatch.enabled,
       });
-
-      if (!res.ok) {
-        const data = await res.json();
-        throw new Error(data.error || "Failed to update batch");
-      }
 
       setSaveMsg("Batch updated successfully.");
       setEditingBatch(null);
       await loadBatches();
-    } catch (err) {
-      setErrorMsg(err instanceof Error ? err.message : "Save failed.");
+    } catch (err: any) {
+      setErrorMsg(err?.message || "Save failed.");
     }
   }
 
@@ -125,33 +161,33 @@ export default function AdminBatchesPage() {
     }
 
     try {
-      const res = await fetch("/api/admin/batches", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          aorCode: newAor,
-          deliveryMode: newMode,
-          session: newSession,
-          classDesignation: newClassDesig || `AIFAT Class ${newAor}99-2026`,
-          capacity: Number(newCapacity),
-          startDate: newStartDate,
-          endDate: newEndDate,
-          startTime: newStartTime,
-          endTime: newEndTime,
-          venue: newVenue,
-        }),
+      const aorObj = AORS.find((a) => a.code === newAor);
+      const batchId = `${newAor.toLowerCase()}-${newMode === "Online" ? "online" : "f2f"}-${newSession.toLowerCase()}`;
+      await setDoc(doc(clientDb, "batches", batchId), {
+        batchId,
+        classDesignation: newClassDesig || `AIFAT Class ${newAor}99-2026`,
+        aorCode: newAor,
+        aorName: aorObj?.name || `${newAor} AOR`,
+        deliveryMode: newMode,
+        session: newSession,
+        capacity: Number(newCapacity) || 25,
+        registeredCount: 0,
+        startDate: newStartDate,
+        endDate: newEndDate,
+        startTime: newStartTime,
+        endTime: newEndTime,
+        venue: newVenue,
+        status: "OPEN",
+        enabled: true,
+        registrationDeadline: null,
+        createdAt: new Date().toISOString(),
       });
-
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error || "Failed to create batch.");
-      }
 
       setSaveMsg("New training batch provisioned successfully.");
       setShowCreateModal(false);
       await loadBatches();
-    } catch (err) {
-      setErrorMsg(err instanceof Error ? err.message : "Creation failed.");
+    } catch (err: any) {
+      setErrorMsg(err?.message || "Creation failed.");
     }
   }
 
@@ -169,7 +205,7 @@ export default function AdminBatchesPage() {
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900">
-      <AdminNav />
+      <AdminNav username={adminProfile?.displayName || adminProfile?.email} role={adminProfile?.role} />
 
       <main className="mx-auto max-w-7xl px-4 py-8 sm:px-6">
         <div className="flex flex-col justify-between gap-4 border-b border-slate-200 pb-5 sm:flex-row sm:items-center">

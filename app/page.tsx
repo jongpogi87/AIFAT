@@ -31,6 +31,9 @@ import {
   calculateAge,
 } from "@/lib/tesda";
 import { DEFAULT_OPERATIONAL_CONFIG } from "@/lib/config";
+import { doc, onSnapshot } from "firebase/firestore";
+import { clientDb } from "@/lib/firebase/client";
+import { registerLearnerSpark } from "@/lib/registration/spark-registration";
 
 type Step = "landing" | "aor" | "batch" | "register" | "confirm";
 
@@ -244,20 +247,21 @@ export default function Home() {
 
   useEffect(() => {
     let isMounted = true;
-    fetch("/api/settings")
-      .then((res) => res.json())
-      .then((data) => {
+    const unsub = onSnapshot(
+      doc(clientDb, "systemSettings", "global"),
+      (snap) => {
         if (isMounted) {
-          setIsRegistrationEnabled(data?.registrationEnabled === true);
+          setIsRegistrationEnabled(snap.exists() && snap.data()?.registrationEnabled === true);
         }
-      })
-      .catch(() => {
-        if (isMounted) {
-          setIsRegistrationEnabled(false);
-        }
-      });
+      },
+      (err) => {
+        console.error("settings_listener_failed", err);
+        if (isMounted) setIsRegistrationEnabled(false);
+      }
+    );
     return () => {
       isMounted = false;
+      unsub();
     };
   }, []);
 
@@ -744,23 +748,10 @@ function RegistrationForm({
     }
 
     try {
-      const res = await fetch("/api/register", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          ...draft,
-          aor: batch.aorCode,
-          batchId: batch.batchId,
-        }),
-      });
-
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error || "Registration could not be completed.");
-      }
-      onDone(data.registration);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Registration could not be completed.");
+      const regRecord = await registerLearnerSpark({ batch, draft });
+      onDone(regRecord);
+    } catch (err: any) {
+      setError(err?.message || "Registration could not be completed.");
       setBusy(false);
     }
   }

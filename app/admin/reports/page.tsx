@@ -1,8 +1,13 @@
-"use client";
-
 import { useEffect, useState } from "react";
+import { useRouter } from "@/lib/router";
 import { AdminNav } from "@/components/admin-nav";
 import { Download, Printer, BarChart3, FileSpreadsheet, ShieldCheck } from "lucide-react";
+import {
+  subscribeAdminAuth,
+  getAdminBatches,
+  exportLearnersCsv,
+  type AdminProfile,
+} from "@/lib/admin/admin-service";
 
 interface BatchSummary {
   batchId: string;
@@ -20,23 +25,67 @@ interface BatchSummary {
 export default function AdminReportsPage() {
   const [batches, setBatches] = useState<BatchSummary[]>([]);
   const [loading, setLoading] = useState(true);
+  const [adminProfile, setAdminProfile] = useState<AdminProfile | null>(null);
+  const router = useRouter();
 
   useEffect(() => {
-    async function load() {
+    let isMounted = true;
+    const unsubscribe = subscribeAdminAuth(async (profile, authLoading) => {
+      if (authLoading) return;
+      if (!profile || !profile.enabled) {
+        router.push("/admin/login");
+        return;
+      }
+      if (isMounted) setAdminProfile(profile);
+
       try {
-        const res = await fetch("/api/admin/batches");
-        if (res.ok) {
-          const data = await res.json();
-          setBatches(data.batches || []);
+        const bDocs = await getAdminBatches();
+        if (isMounted) {
+          const summaries: BatchSummary[] = bDocs.map((b) => {
+            const capacity = b.capacity || 25;
+            const enrolled = Number(b.registeredCount) || 0;
+            return {
+              batchId: b.batchId,
+              classDesignation: b.classDesignation,
+              aorName: b.aorName,
+              aorCode: b.aorCode,
+              deliveryMode: b.deliveryMode,
+              session: b.session,
+              enrolled,
+              capacity,
+              remaining: Math.max(0, capacity - enrolled),
+              status: b.status,
+            };
+          });
+          setBatches(summaries);
         }
       } catch (err) {
-        console.error(err);
+        console.error("load_reports_err", err);
       } finally {
-        setLoading(false);
+        if (isMounted) setLoading(false);
       }
+    });
+
+    return () => {
+      isMounted = false;
+      unsubscribe();
+    };
+  }, [router]);
+
+  async function handleDownloadCsv() {
+    try {
+      const csv = await exportLearnersCsv();
+      const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `AIFAT-Official-Training-Report-${new Date().toISOString().split("T")[0]}.csv`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error("download_csv_failed", err);
     }
-    load();
-  }, []);
+  }
 
   const totalEnrolled = batches.reduce((sum, b) => sum + b.enrolled, 0);
   const totalCapacity = batches.reduce((sum, b) => sum + (b.capacity || 25), 0);
@@ -45,7 +94,7 @@ export default function AdminReportsPage() {
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900">
       <div className="print:hidden">
-        <AdminNav />
+        <AdminNav username={adminProfile?.displayName || adminProfile?.email} role={adminProfile?.role} />
       </div>
 
       <main className="mx-auto max-w-7xl px-4 py-8 sm:px-6 print:p-2">
@@ -68,12 +117,12 @@ export default function AdminReportsPage() {
             >
               <Printer size={15} /> Print Roster Report
             </button>
-            <a
-              href="/api/admin/export"
+            <button
+              onClick={handleDownloadCsv}
               className="flex min-h-10 items-center gap-1.5 rounded-lg bg-[#075b32] px-4 py-2 text-xs font-bold text-white shadow-sm hover:bg-[#054927]"
             >
               <Download size={15} /> Download CSV Spreadsheet
-            </a>
+            </button>
           </div>
         </div>
 

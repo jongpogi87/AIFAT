@@ -1,9 +1,14 @@
-"use client";
-
 import { useEffect, useState } from "react";
+import { useRouter } from "@/lib/router";
 import { AdminNav } from "@/components/admin-nav";
 import { DEFAULT_OPERATIONAL_CONFIG, type OperationalConfig } from "@/lib/config";
 import { Save, AlertTriangle, ShieldCheck, Check, Lock } from "lucide-react";
+import {
+  subscribeAdminAuth,
+  getAdminSystemSettings,
+  updateAdminSystemSettings,
+  type AdminProfile,
+} from "@/lib/admin/admin-service";
 
 function isPending(val: any): boolean {
   if (val === undefined || val === null) return true;
@@ -33,23 +38,36 @@ export default function AdminSettingsPage() {
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const [adminProfile, setAdminProfile] = useState<AdminProfile | null>(null);
+  const router = useRouter();
 
   useEffect(() => {
-    async function load() {
+    let isMounted = true;
+    const unsubscribe = subscribeAdminAuth(async (profile, authLoading) => {
+      if (authLoading) return;
+      if (!profile || !profile.enabled) {
+        router.push("/admin/login");
+        return;
+      }
+      if (isMounted) setAdminProfile(profile);
+
       try {
-        const res = await fetch("/api/admin/settings");
-        if (res.ok) {
-          const data = await res.json();
-          setConfig({ ...DEFAULT_OPERATIONAL_CONFIG, ...data.settings });
+        const data = await getAdminSystemSettings();
+        if (isMounted) {
+          setConfig({ ...DEFAULT_OPERATIONAL_CONFIG, ...(data as any) });
         }
       } catch (err) {
-        console.error(err);
+        console.error("load_settings_err", err);
       } finally {
-        setLoading(false);
+        if (isMounted) setLoading(false);
       }
-    }
-    load();
-  }, []);
+    });
+
+    return () => {
+      isMounted = false;
+      unsubscribe();
+    };
+  }, [router]);
 
   async function handleSave(e: React.FormEvent) {
     e.preventDefault();
@@ -58,20 +76,10 @@ export default function AdminSettingsPage() {
     setError("");
 
     try {
-      const res = await fetch("/api/admin/settings", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(config),
-      });
-
-      if (!res.ok) {
-        const data = await res.json();
-        throw new Error(data.error || "Failed to update configuration.");
-      }
-
+      await updateAdminSystemSettings(config as any);
       setMessage("Operational and course configuration saved successfully.");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Save failed.");
+    } catch (err: any) {
+      setError(err?.message || "Save failed.");
     } finally {
       setSaving(false);
     }
@@ -92,7 +100,7 @@ export default function AdminSettingsPage() {
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900">
-      <AdminNav />
+      <AdminNav username={adminProfile?.displayName || adminProfile?.email} role={adminProfile?.role} />
 
       <main className="mx-auto max-w-4xl px-4 py-8 sm:px-6">
         <div className="border-b border-slate-200 pb-5">

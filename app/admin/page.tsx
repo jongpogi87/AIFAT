@@ -1,10 +1,14 @@
-"use client";
-
 import { useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
+import { Link, useRouter } from "@/lib/router";
 import { AdminNav } from "@/components/admin-nav";
 import { Users, CheckCircle2, AlertTriangle, Layers, ArrowRight, Laptop, CalendarDays } from "lucide-react";
-import Link from "next/link";
+import {
+  subscribeAdminAuth,
+  getAdminBatches,
+  getAdminLearners,
+  exportLearnersCsv,
+  type AdminProfile,
+} from "@/lib/admin/admin-service";
 
 interface BatchStat {
   batchId: string;
@@ -21,7 +25,7 @@ interface BatchStat {
 }
 
 interface LearnerItem {
-  id: number;
+  id: string | number;
   referenceNumber: string;
   fullName: string;
   aor: string;
@@ -36,40 +40,69 @@ export default function AdminDashboardPage() {
   const [loading, setLoading] = useState(true);
   const [batches, setBatches] = useState<BatchStat[]>([]);
   const [learners, setLearners] = useState<LearnerItem[]>([]);
-  const [user, setUser] = useState<{ username: string; role: string } | null>(null);
+  const [adminProfile, setAdminProfile] = useState<AdminProfile | null>(null);
   const router = useRouter();
 
   useEffect(() => {
-    async function init() {
-      try {
-        const authRes = await fetch("/api/admin/auth/me");
-        if (!authRes.ok) {
-          router.push("/admin/login");
-          return;
-        }
-        const authData = await authRes.json();
-        setUser(authData.user);
+    let isMounted = true;
+    const unsubscribe = subscribeAdminAuth(async (profile, authLoading) => {
+      if (authLoading) return;
+      if (!profile || !profile.enabled) {
+        router.push("/admin/login");
+        return;
+      }
+      if (isMounted) setAdminProfile(profile);
 
-        const [batchesRes, learnersRes] = await Promise.all([
-          fetch("/api/admin/batches"),
-          fetch("/api/admin/learners?limit=10"),
+      try {
+        const [bDocs, lDocs] = await Promise.all([
+          getAdminBatches(),
+          getAdminLearners({ limit: 10 }),
         ]);
 
-        if (batchesRes.ok) {
-          const bData = await batchesRes.json();
-          setBatches(bData.batches || []);
-        }
-        if (learnersRes.ok) {
-          const lData = await learnersRes.json();
-          setLearners(lData.learners || []);
+        if (isMounted) {
+          const stats: BatchStat[] = bDocs.map((b) => {
+            const capacity = b.capacity || 25;
+            const enrolled = Number(b.registeredCount) || 0;
+            return {
+              batchId: b.batchId,
+              classDesignation: b.classDesignation,
+              aorCode: b.aorCode,
+              aorName: b.aorName,
+              deliveryMode: b.deliveryMode,
+              session: b.session,
+              capacity,
+              enrolled,
+              remaining: Math.max(0, capacity - enrolled),
+              status: b.status,
+              isFull: enrolled >= capacity || b.status === "FULL",
+            };
+          });
+          setBatches(stats);
+
+          const lItems: LearnerItem[] = lDocs.map((l: any) => ({
+            id: l.id || l.learnerId,
+            referenceNumber: l.referenceNumber || l.id,
+            fullName: l.fullName || `${l.firstName || ""} ${l.lastName || ""}`.trim(),
+            aor: l.aorName || l.region || "AOR",
+            batchId: l.batchId || "",
+            classDesignation: l.classDesignation || "AIFAT-2026",
+            deliveryMode: l.deliveryMode || "Online",
+            registrationStatus: l.status || "CONFIRMED",
+            createdAt: l.createdAt || "",
+          }));
+          setLearners(lItems);
         }
       } catch (err) {
         console.error("failed_to_load_dashboard", err);
       } finally {
-        setLoading(false);
+        if (isMounted) setLoading(false);
       }
-    }
-    init();
+    });
+
+    return () => {
+      isMounted = false;
+      unsubscribe();
+    };
   }, [router]);
 
   if (loading) {
@@ -108,9 +141,24 @@ export default function AdminDashboardPage() {
     aorMap[b.aorCode].cap += b.capacity || 25;
   }
 
+  async function handleExportCsv() {
+    try {
+      const csv = await exportLearnersCsv();
+      const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `AIFAT-Learners-${new Date().toISOString().split("T")[0]}.csv`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error("export_failed", err);
+    }
+  }
+
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900">
-      <AdminNav username={user?.username} role={user?.role} />
+      <AdminNav username={adminProfile?.displayName || adminProfile?.email} role={adminProfile?.role} />
 
       <main className="mx-auto max-w-7xl px-4 py-8 sm:px-6">
         <div className="flex flex-col justify-between gap-4 border-b border-slate-200 pb-5 sm:flex-row sm:items-center">
@@ -121,12 +169,12 @@ export default function AdminDashboardPage() {
             </p>
           </div>
           <div className="flex gap-2">
-            <Link
-              href="/api/admin/export"
+            <button
+              onClick={handleExportCsv}
               className="flex min-h-10 items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-bold text-slate-700 shadow-sm hover:bg-slate-50"
             >
               Export CSV Roster
-            </Link>
+            </button>
             <Link
               href="/admin/batches"
               className="flex min-h-10 items-center gap-1.5 rounded-lg bg-[#075b32] px-3 py-2 text-xs font-bold text-white shadow-sm hover:bg-[#054927]"

@@ -1,30 +1,34 @@
-import vinext from "vinext";
 import { defineConfig } from "vite";
-import { sites } from "./build/sites-vite-plugin";
+import react from "@vitejs/plugin-react";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 
-// macOS Seatbelt blocks FSEvents, so Codex previews need polling for HMR.
-const isCodexSeatbeltSandbox = process.env.CODEX_SANDBOX === "seatbelt";
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-export default defineConfig(() => {
-  return {
-    server: {
-      host: "0.0.0.0",
-      allowedHosts: ["terminal.local", "localhost", "127.0.0.1"],
-      ...(isCodexSeatbeltSandbox
-        ? { watch: { useFsEvents: false, usePolling: true } }
-        : {}),
+export default defineConfig({
+  resolve: {
+    alias: {
+      "@": path.resolve(__dirname, "./"),
+      "next/navigation": path.resolve(__dirname, "./lib/router.tsx"),
+      "next/link": path.resolve(__dirname, "./lib/router.tsx"),
     },
-    build: {
-      rollupOptions: {
-        external: ["cloudflare:workers"],
-      },
+  },
+  plugins: [react()],
+  build: {
+    outDir: "dist",
+    emptyOutDir: true,
+    rollupOptions: {
+      // Exclude server-only external packages from the client build
+      external: [
+        "cloudflare:workers",
+        "firebase-admin",
+        "@google-cloud/firestore",
+      ],
     },
-    ssr: {
-      external: ["cloudflare:workers"],
-    },
-    plugins: [
-      vinext(),
-      sites(),
-    ],
-  };
+  },
+  server: {
+    port: 3000,
+    host: "0.0.0.0",
+    allowedHosts: ["terminal.local", "localhost", "127.0.0.1"],
+  },
 });

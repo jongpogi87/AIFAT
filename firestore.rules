@@ -16,6 +16,12 @@ service cloud.firestore {
          get(/databases/$(database)/documents/adminProfiles/$(request.auth.uid)).data.role == 'ADMIN');
     }
 
+    // Helper function: Check if global registration switch is enabled
+    function isGlobalRegistrationEnabled() {
+      return exists(/databases/$(database)/documents/systemSettings/global) &&
+        get(/databases/$(database)/documents/systemSettings/global).data.registrationEnabled == true;
+    }
+
     // Default posture: DENY ALL
     match /{document=**} {
       allow read, write: if false;
@@ -27,32 +33,127 @@ service cloud.firestore {
       allow write: if isAdmin();
     }
 
-    // Batches: Public read-only for enabled batches, Admin write
-    // Public learners CANNOT modify batch capacity or registeredCount directly
+    // Batches: Public read-only; Admin full write
+    // Authenticated learners can ONLY increment registeredCount by +1 when batch is OPEN and valid registration exists
     match /batches/{batchId} {
       allow read: if true;
-      allow write: if isAdmin();
+      allow create, delete: if isAdmin();
+      allow update: if isAdmin() || (
+        isAuthenticated() &&
+        isGlobalRegistrationEnabled() &&
+        resource.data.enabled == true &&
+        resource.data.status in ['OPEN', 'NEARLY FULL'] &&
+        (resource.data.registrationDeadline == null || request.time < resource.data.registrationDeadline) &&
+        request.time < timestamp.date(2026, 9, 15) &&
+        request.resource.data.registeredCount == resource.data.registeredCount + 1 &&
+        request.resource.data.registeredCount <= resource.data.capacity &&
+        (
+          (request.resource.data.registeredCount == resource.data.capacity &&
+           request.resource.data.status == 'FULL' &&
+           request.resource.data.diff(resource.data).affectedKeys().hasOnly(['registeredCount', 'status', 'lastRegistrationId'])) ||
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['registeredCount', 'lastRegistrationId'])
+        ) &&
+        existsAfter(/databases/$(database)/documents/registrations/$(request.resource.data.lastRegistrationId)) &&
+        getAfter(/databases/$(database)/documents/registrations/$(request.resource.data.lastRegistrationId)).data.batchId == batchId &&
+        getAfter(/databases/$(database)/documents/registrations/$(request.resource.data.lastRegistrationId)).data.userId == request.auth.uid
+      );
     }
 
-    // Learners: STRICTLY DENIED for public client direct access
-    // All creation and updates are server-mediated via Next.js Server / Admin SDK
-    match /learners/{learnerId} {
-      allow read: if isAdmin();
-      allow write: if isAdmin();
-    }
-
-    // Registrations: STRICTLY DENIED for public client direct access
+    // Registrations: Private registration record
+    // Learner can read own registration; Admin can read all
     match /registrations/{registrationId} {
-      allow read: if isAdmin();
-      allow write: if isAdmin();
+      allow read: if isAuthenticated() &&
+        (resource.data.userId == request.auth.uid || isAdmin());
+      allow create: if isAdmin() || (
+        isAuthenticated() &&
+        isGlobalRegistrationEnabled() &&
+        request.resource.data.userId == request.auth.uid &&
+        request.resource.data.id == registrationId &&
+        request.resource.data.keys().hasOnly([
+          'id', 'referenceNumber', 'learnerId', 'batchId', 'aorCode',
+          'duplicateKey', 'status', 'trainingYear', 'createdAt', 'userId'
+        ]) &&
+        request.resource.data.status == 'CONFIRMED' &&
+        request.resource.data.trainingYear == 2026 &&
+        request.resource.data.aorCode == get(/databases/$(database)/documents/batches/$(request.resource.data.batchId)).data.aorCode &&
+        getAfter(/databases/$(database)/documents/batches/$(request.resource.data.batchId)).data.registeredCount ==
+          get(/databases/$(database)/documents/batches/$(request.resource.data.batchId)).data.registeredCount + 1 &&
+        getAfter(/databases/$(database)/documents/batches/$(request.resource.data.batchId)).data.lastRegistrationId == registrationId &&
+        existsAfter(/databases/$(database)/documents/duplicates/$(request.resource.data.duplicateKey)) &&
+        getAfter(/databases/$(database)/documents/duplicates/$(request.resource.data.duplicateKey)).data.registrationId == registrationId &&
+        getAfter(/databases/$(database)/documents/duplicates/$(request.resource.data.duplicateKey)).data.batchId == request.resource.data.batchId &&
+        existsAfter(/databases/$(database)/documents/learners/$(request.resource.data.learnerId)) &&
+        getAfter(/databases/$(database)/documents/learners/$(request.resource.data.learnerId)).data.registrationId == registrationId &&
+        getAfter(/databases/$(database)/documents/learners/$(request.resource.data.learnerId)).data.userId == request.auth.uid &&
+        existsAfter(/databases/$(database)/documents/verifications/$(request.resource.data.referenceNumber)) &&
+        getAfter(/databases/$(database)/documents/verifications/$(request.resource.data.referenceNumber)).data.batchId == request.resource.data.batchId &&
+        getAfter(/databases/$(database)/documents/verifications/$(request.resource.data.referenceNumber)).data.referenceNumber == request.resource.data.referenceNumber
+      );
+      allow update: if isAdmin();
+      allow delete: if false;
     }
 
-    // Duplicates reservation documents: Server-only
+    // Learners: Learner PII
+    // Learner can read own profile; Admin can read all
+    match /learners/{learnerId} {
+      allow read: if isAuthenticated() &&
+        (resource.data.userId == request.auth.uid || isAdmin());
+      allow create: if isAdmin() || (
+        isAuthenticated() &&
+        request.resource.data.userId == request.auth.uid &&
+        request.resource.data.learnerId == learnerId &&
+        request.resource.data.keys().hasOnly([
+          'learnerId', 'registrationId', 'userId', 'fullName', 'firstName', 'lastName',
+          'middleName', 'extensionName', 'email', 'contactNumber', 'mobileNumber',
+          'street', 'barangay', 'district', 'cityMunicipality', 'province', 'region', 'address',
+          'nationality', 'sex', 'civilStatus', 'birthdate', 'age', 'birthCity', 'birthProvince', 'birthRegion',
+          'employmentStatus', 'employmentType', 'educationalAttainment', 'parentGuardianName', 'parentGuardianAddress',
+          'learnerClassification', 'classificationOthers', 'isScholar', 'scholarshipPackage', 'scholarshipPackageOthers',
+          'consent', 'applicantCertified', 'courseQualification', 'createdAt', 'updatedAt',
+          'militaryRank', 'militarySerialNumber', 'unit', 'serviceBranch'
+        ]) &&
+        existsAfter(/databases/$(database)/documents/registrations/$(request.resource.data.registrationId)) &&
+        getAfter(/databases/$(database)/documents/registrations/$(request.resource.data.registrationId)).data.learnerId == learnerId &&
+        getAfter(/databases/$(database)/documents/registrations/$(request.resource.data.registrationId)).data.userId == request.auth.uid
+      );
+      allow update: if isAdmin();
+      allow delete: if false;
+    }
+
+    // Duplicates: Write-once lock
+    // STRICT PRIVACY: Read denied for all clients (including learners and admins)
+    // Write-once enforced: creation allowed only if uncreated; updates/deletes strictly DENIED
     match /duplicates/{duplicateKey} {
-      allow read, write: if false;
+      allow read: if false;
+      allow create: if isAuthenticated() &&
+        request.resource.data.duplicateKey == duplicateKey &&
+        request.resource.data.userId == request.auth.uid &&
+        request.resource.data.keys().hasOnly(['duplicateKey', 'registrationId', 'batchId', 'userId', 'createdAt']) &&
+        existsAfter(/databases/$(database)/documents/registrations/$(request.resource.data.registrationId)) &&
+        getAfter(/databases/$(database)/documents/registrations/$(request.resource.data.registrationId)).data.duplicateKey == duplicateKey;
+      allow update, delete: if false;
     }
 
-    // Counters: Server-only for transaction-safe sequence generation
+    // Verifications: Public verification record (NO PII, NO Learner Initials, NO Registration Document ID)
+    // Public can read to verify authenticity of certificate / reference number
+    match /verifications/{referenceNumber} {
+      allow read: if true;
+      allow create: if isAuthenticated() &&
+        request.resource.data.referenceNumber == referenceNumber &&
+        request.resource.data.keys().hasOnly([
+          'referenceNumber', 'batchId', 'classDesignation',
+          'aorName', 'deliveryMode', 'session', 'trainingYear', 'status', 'createdAt'
+        ]) &&
+        request.resource.data.status == 'CONFIRMED' &&
+        request.resource.data.trainingYear == 2026 &&
+        request.resource.data.classDesignation == get(/databases/$(database)/documents/batches/$(request.resource.data.batchId)).data.classDesignation &&
+        request.resource.data.aorName == get(/databases/$(database)/documents/batches/$(request.resource.data.batchId)).data.aorName &&
+        request.resource.data.deliveryMode == get(/databases/$(database)/documents/batches/$(request.resource.data.batchId)).data.deliveryMode &&
+        request.resource.data.session == get(/databases/$(database)/documents/batches/$(request.resource.data.batchId)).data.session;
+      allow update, delete: if false;
+    }
+
+    // Counters: Server-only / deprecated in client-direct model
     match /counters/{counterId} {
       allow read, write: if false;
     }
@@ -70,6 +171,7 @@ service cloud.firestore {
     }
 
     // Admin Profiles: Strictly protected; users can read their own profile if authenticated
+    // Client write is strictly DENIED for ALL clients (including ADMIN and SUPER_ADMIN)
     match /adminProfiles/{uid} {
       allow read: if isAuthenticated() &&
         (request.auth.uid == uid || isAdmin());

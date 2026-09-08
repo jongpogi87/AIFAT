@@ -1,12 +1,18 @@
-"use client";
-
 import { useEffect, useState } from "react";
+import { useRouter } from "@/lib/router";
 import { AdminNav } from "@/components/admin-nav";
 import { AORS } from "@/lib/batches";
 import { Search, Download, Edit3, X, Check, Filter, Eye } from "lucide-react";
+import {
+  subscribeAdminAuth,
+  getAdminLearners,
+  updateAdminLearner,
+  exportLearnersCsv,
+  type AdminProfile,
+} from "@/lib/admin/admin-service";
 
 interface Learner {
-  id: number;
+  id: string | number;
   referenceNumber: string;
   fullName: string;
   lastName: string;
@@ -57,30 +63,99 @@ export default function AdminLearnersPage() {
   const [editingLearner, setEditingLearner] = useState<Learner | null>(null);
   const [viewingLearner, setViewingLearner] = useState<Learner | null>(null);
   const [statusMsg, setStatusMsg] = useState("");
+  const [adminProfile, setAdminProfile] = useState<AdminProfile | null>(null);
+  const router = useRouter();
 
   async function fetchLearners() {
     setLoading(true);
     try {
-      const params = new URLSearchParams();
-      if (query) params.set("q", query);
-      if (selectedAor) params.set("aor", selectedAor);
-      if (selectedStatus) params.set("status", selectedStatus);
+      const lDocs = await getAdminLearners();
+      let items: Learner[] = lDocs.map((l: any) => ({
+        id: l.id || l.learnerId,
+        referenceNumber: l.referenceNumber || l.id,
+        fullName: l.fullName || `${l.firstName || ""} ${l.lastName || ""}`.trim(),
+        lastName: l.lastName || "",
+        firstName: l.firstName || "",
+        middleName: l.middleName || "",
+        extensionName: l.extensionName || "",
+        email: l.email || "",
+        contactNumber: l.contactNumber || l.mobileNumber || "",
+        street: l.street || "",
+        barangay: l.barangay || "",
+        cityMunicipality: l.cityMunicipality || "",
+        province: l.province || "",
+        region: l.region || "",
+        sex: l.sex || "",
+        civilStatus: l.civilStatus || "",
+        birthdate: l.birthdate || "",
+        age: l.age || null,
+        employmentStatus: l.employmentStatus || "",
+        employmentType: l.employmentType || "",
+        educationalAttainment: l.educationalAttainment || "",
+        learnerClassification: l.learnerClassification || "",
+        classificationOthers: l.classificationOthers || "",
+        isScholar: l.isScholar || false,
+        scholarshipPackage: l.scholarshipPackage || "",
+        scholarshipPackageOthers: l.scholarshipPackageOthers || "",
+        uliNumber: l.uliNumber || "",
+        entryDate: l.entryDate || "",
+        disabilityType: l.disabilityType || "",
+        disabilityCauses: l.disabilityCauses || "",
+        aor: l.aorName || l.aor || l.region || "AOR",
+        batchId: l.batchId || "",
+        classDesignation: l.classDesignation || "AIFAT-2026",
+        deliveryMode: l.deliveryMode || "Online",
+        session: l.session || "AM",
+        registrationStatus: l.registrationStatus || l.status || "CONFIRMED",
+        attendanceStatus: l.attendanceStatus || "PENDING",
+        completionStatus: l.completionStatus || "INCOMPLETE",
+        certificationStatus: l.certificationStatus || "NOT_ISSUED",
+        createdAt: l.createdAt || "",
+      }));
 
-      const res = await fetch(`/api/admin/learners?${params.toString()}`);
-      if (res.ok) {
-        const data = await res.json();
-        setLearners(data.learners || []);
+      if (query.trim()) {
+        const q = query.trim().toLowerCase();
+        items = items.filter(
+          (l) =>
+            l.fullName.toLowerCase().includes(q) ||
+            l.email.toLowerCase().includes(q) ||
+            l.referenceNumber.toLowerCase().includes(q)
+        );
       }
+      if (selectedAor) {
+        items = items.filter((l) => l.aor.includes(selectedAor));
+      }
+      if (selectedStatus) {
+        items = items.filter((l) => l.registrationStatus === selectedStatus);
+      }
+
+      setLearners(items);
     } catch (err) {
-      console.error(err);
+      console.error("fetch_learners_err", err);
     } finally {
       setLoading(false);
     }
   }
 
   useEffect(() => {
-    fetchLearners();
-  }, [selectedAor, selectedStatus]);
+    let isMounted = true;
+    const unsubscribe = subscribeAdminAuth((profile, authLoading) => {
+      if (authLoading) return;
+      if (!profile || !profile.enabled) {
+        router.push("/admin/login");
+        return;
+      }
+      if (isMounted) {
+        setAdminProfile(profile);
+        fetchLearners();
+      }
+    });
+
+    return () => {
+      isMounted = false;
+      unsubscribe();
+    };
+  }, [selectedAor, selectedStatus, router]);
 
   async function handleSearch(e: React.FormEvent) {
     e.preventDefault();
@@ -93,34 +168,35 @@ export default function AdminLearnersPage() {
     setStatusMsg("");
 
     try {
-      const res = await fetch(`/api/admin/learners/${editingLearner.id}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          registrationStatus: editingLearner.registrationStatus,
-          attendanceStatus: editingLearner.attendanceStatus,
-          completionStatus: editingLearner.completionStatus,
-          certificationStatus: editingLearner.certificationStatus,
-          uliNumber: editingLearner.uliNumber,
-          entryDate: editingLearner.entryDate,
-          disabilityType: editingLearner.disabilityType,
-          disabilityCauses: editingLearner.disabilityCauses,
-        }),
-      });
-
-      if (res.ok) {
-        setStatusMsg("Learner record and administrative fields updated successfully.");
-        setEditingLearner(null);
-        fetchLearners();
-      }
+      await updateAdminLearner(String(editingLearner.id), {
+        ...editingLearner,
+      } as any);
+      setStatusMsg("Learner record and administrative fields updated successfully.");
+      setEditingLearner(null);
+      fetchLearners();
     } catch (err) {
-      console.error(err);
+      console.error("update_learner_err", err);
+    }
+  }
+
+  async function handleExportCsv() {
+    try {
+      const csv = await exportLearnersCsv();
+      const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `AIFAT-Official-TESDA-Learners-${new Date().toISOString().split("T")[0]}.csv`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error("export_csv_err", err);
     }
   }
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900">
-      <AdminNav />
+      <AdminNav username={adminProfile?.displayName || adminProfile?.email} role={adminProfile?.role} />
 
       <main className="mx-auto max-w-7xl px-4 py-8 sm:px-6">
         <div className="flex flex-col justify-between gap-4 border-b border-slate-200 pb-5 sm:flex-row sm:items-center">
@@ -130,12 +206,12 @@ export default function AdminLearnersPage() {
               Review official learner profiles (MIS 03-01), manage ULI assignments, attendance, and certification records.
             </p>
           </div>
-          <a
-            href="/api/admin/export"
+          <button
+            onClick={handleExportCsv}
             className="flex min-h-10 items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-4 py-2 text-xs font-bold text-slate-700 shadow-sm hover:bg-slate-50"
           >
             <Download size={15} /> Export Official TESDA CSV
-          </a>
+          </button>
         </div>
 
         {/* Filter & Search Bar */}

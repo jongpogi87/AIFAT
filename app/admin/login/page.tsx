@@ -1,7 +1,6 @@
-"use client";
-
 import { useState } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter } from "@/lib/router";
+import { loginAdmin } from "@/lib/admin/admin-service";
 import { ShieldCheck, Lock, User, ArrowRight } from "lucide-react";
 
 export default function AdminLoginPage() {
@@ -17,20 +16,11 @@ export default function AdminLoginPage() {
     setError("");
 
     try {
-      const res = await fetch("/api/admin/auth/login", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ username, password }),
-      });
-
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error || "Authentication failed.");
-      }
-
-      window.location.href = "/admin";
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Authentication failed.");
+      const email = username.includes("@") ? username.trim() : `${username.trim().toLowerCase()}@example.invalid`;
+      await loginAdmin(email, password);
+      router.push("/admin");
+    } catch (err: any) {
+      setError(err?.message || "Authentication failed.");
     } finally {
       setBusy(false);
     }

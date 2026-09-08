@@ -1,7 +1,5 @@
-"use client";
-
-import Link from "next/link";
-import { usePathname, useRouter } from "next/navigation";
+import { Link, usePathname, useRouter } from "@/lib/router";
+import { logoutAdmin } from "@/lib/admin/admin-service";
 import { LayoutDashboard, Layers, Users, FileText, Settings, LogOut, ExternalLink } from "lucide-react";
 
 export function AdminNav({ username, role }: { username?: string; role?: string }) {
@@ -10,11 +8,10 @@ export function AdminNav({ username, role }: { username?: string; role?: string 
 
   async function handleLogout() {
     try {
-      await fetch("/api/admin/auth/logout", { method: "POST" });
+      await logoutAdmin();
       router.push("/admin/login");
-      router.refresh();
     } catch {
-      window.location.href = "/admin/login";
+      router.push("/admin/login");
     }
   }
 
