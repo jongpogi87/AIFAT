@@ -11,6 +11,7 @@ import {
 } from "firebase/firestore";
 import {
   signInWithEmailAndPassword,
+  sendPasswordResetEmail,
   signOut,
   onAuthStateChanged,
   type User,
@@ -44,17 +45,90 @@ export interface AdminLearnerRecord {
   createdAt?: string;
 }
 
+export const NEUTRAL_PASSWORD_RESET_MESSAGE =
+  "If this email is associated with an administrator account, password reset instructions have been sent.";
+
 /**
  * Sign in admin user using Firebase Client Auth.
  */
 export async function loginAdmin(email: string, pass: string): Promise<AdminProfile> {
-  const cred = await signInWithEmailAndPassword(clientAuth, email.trim(), pass);
+  const cleanEmail = (email || "").trim();
+  if (!cleanEmail) {
+    throw new Error("Administrative email is required.");
+  }
+  if (!pass) {
+    throw new Error("Password is required.");
+  }
+
+  let cred;
+  try {
+    cred = await signInWithEmailAndPassword(clientAuth, cleanEmail, pass);
+  } catch (err: any) {
+    const code = err?.code || "";
+    if (
+      code === "auth/invalid-credential" ||
+      code === "auth/user-not-found" ||
+      code === "auth/wrong-password" ||
+      code === "auth/invalid-email"
+    ) {
+      throw new Error("Invalid administrative email or password.");
+    }
+    if (code === "auth/too-many-requests") {
+      throw new Error("Too many failed attempts. Please try again later.");
+    }
+    throw new Error("Authentication failed. Please verify your credentials.");
+  }
+
   const profile = await getAdminProfile(cred.user.uid);
   if (!profile || !profile.enabled) {
     await signOut(clientAuth);
-    throw new Error("Admin profile is disabled or not found.");
+    throw new Error("Administrative access not authorized.");
   }
   return profile;
+}
+
+/**
+ * Requests a password reset email using Firebase Authentication client SDK.
+ * Safeguards against account enumeration by always returning a neutral message
+ * regardless of whether the email exists in Firebase Auth.
+ */
+export async function requestAdminPasswordReset(
+  email: string
+): Promise<{ success: boolean; message: string }> {
+  const cleanEmail = (email || "").trim().toLowerCase();
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  if (!cleanEmail || !emailRegex.test(cleanEmail)) {
+    throw new Error("Please enter a valid administrative email address.");
+  }
+
+  try {
+    await sendPasswordResetEmail(clientAuth, cleanEmail);
+    return {
+      success: true,
+      message: NEUTRAL_PASSWORD_RESET_MESSAGE,
+    };
+  } catch (err: any) {
+    const code = err?.code || "";
+    // Account enumeration protection: suppress user not found / invalid credential errors
+    if (
+      code === "auth/user-not-found" ||
+      code === "auth/invalid-credential" ||
+      code === "auth/user-disabled"
+    ) {
+      return {
+        success: true,
+        message: NEUTRAL_PASSWORD_RESET_MESSAGE,
+      };
+    }
+    if (code === "auth/invalid-email") {
+      throw new Error("Please enter a valid administrative email address.");
+    }
+    if (code === "auth/too-many-requests") {
+      throw new Error("Too many requests. Please wait a few moments before trying again.");
+    }
+    // Generic safe error message to avoid leaking Firebase internals
+    throw new Error("Unable to process password reset at this time. Please try again later.");
+  }
 }
 
 /**
